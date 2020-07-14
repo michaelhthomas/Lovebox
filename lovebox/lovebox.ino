@@ -4,10 +4,12 @@
 #include <Servo.h>
 #include "SSD1306Wire.h"
 
-#include "credentials.h"
+#include "settings.h"
+const int fetchIntervalMillis = _fetchIntervalSeconds * 1000;
 const char* ssid = _ssid;
 const char* password = _password;
 const String url = _url;
+const int lightValueThreshold = _lightValueThreshold;
 
 SSD1306Wire oled(0x3C, D2, D1);
 Servo myservo; 
@@ -15,15 +17,16 @@ int pos = 90;
 int increment = -1;
 int lightValue;
 String line;
-String modus;
-char idSaved; 
-bool wasRead;  
+String mode;
+char idSaved = '0'; 
+bool wasRead = true;
 
 void drawMessage(const String& message) {
+  Serial.print("Drawing message....");
   oled.clear();
 
   // Unterscheide zwischen Text und Bild
-  if(modus[0] == 't'){
+  if(mode[0] == 't'){
     oled.drawStringMaxWidth(0, 0, 128, message);    
   } 
   else {
@@ -37,20 +40,26 @@ void drawMessage(const String& message) {
     } 
   }    
   oled.display();
+  Serial.println("done.");
 }
 
 void wifiConnect() {
+  Serial.printf("Connecting to WiFi '%s'...", ssid);
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.begin(ssid, password);
   
-    // Warte auf Verbindung
+    // Waiting for connection
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
+      Serial.print(".");
     }
   }
+  Serial.print("..done. IP ");
+  Serial.println(WiFi.localIP());
 }
 
 void getGistMessage() {
+  Serial.print("Fetching message...");
   const int httpsPort = 443;
   const char* host = "gist.githubusercontent.com";
   const char fingerprint[] = "70 94 DE DD E6 C4 69 48 3A 92 70 A1 48 56 78 2D 18 64 E0 B7";
@@ -58,10 +67,12 @@ void getGistMessage() {
   WiFiClientSecure client;
   client.setFingerprint(fingerprint);
   if (!client.connect(host, httpsPort)) {
-    return; // Verbindung fehlgeschlagen
+    serial.println("connection failed.");
+    return; // Connection failed
   }
-  
-  client.print(String("GET ") + url + " HTTP/1.1\r\n" +
+
+  // current millis used to as a cache-busting means
+  client.print(String("GET ") + url + "?" + millis() + " HTTP/1.1\r\n" +
                "Host: " + host + "\r\n" +
                "User-Agent: ESP8266\r\n" +
                "Connection: close\r\n\r\n");
@@ -72,33 +83,45 @@ void getGistMessage() {
       break;
     }
   }
-  String id = client.readStringUntil('\n'); 
-  if(id[0] != idSaved){ // Neue Nachricht
+  String id = client.readStringUntil('\n');
+  Serial.printf("\tid: '%s', last processed id: '%c'\n", id.c_str(), idSaved);
+  if(id[0] != idSaved){ // new message
     wasRead = 0;
     idSaved = id[0];
     EEPROM.write(142, idSaved);
     EEPROM.write(144, wasRead);
     EEPROM.commit(); 
 
-    modus = client.readStringUntil('\n');
+    mode = client.readStringUntil('\n');
+    Serial.println("\tmode: " + mode);
     line = client.readStringUntil(0);
+    Serial.println("\tmessage: " + line);
     drawMessage(line);
+  } else {
+    Serial.println("\t-> message id wasn't updated");
   }
 }
 
-void spinServo(){
-    myservo.write(pos);      
-    delay(50);    // Warte 50ms um den Servo zu drehen
+void spinServo() {
+  myservo.write(pos);      
+  delay(50);    // wait 50ms to turn servo
 
-    if(pos == 75 || pos == 105){ // Drehbereich zwischen 75°-105°
-      increment *= -1;
-    }
-    pos += increment;
+  if(pos == 75 || pos == 105){ // 75°-105° range
+    increment *= -1;
+  }
+  pos += increment;
 }
 
 void setup() {
-  myservo.attach(16);       // Servo an D0
+  // Setup serial
+  Serial.begin(9600);
+  Serial.println("\n\n");
   
+  Serial.print("Attatching servo...");
+  myservo.attach(16);       // Servo on D0
+  Serial.println("done.");
+  
+  Serial.print("Initializing display...");
   oled.init();
   oled.flipScreenVertically();
   oled.setColor(WHITE);
@@ -108,6 +131,7 @@ void setup() {
   oled.clear();
   oled.drawString(30, 30, "<3 LOVEBOX <3");
   oled.display();
+  Serial.println("done.");
   
   wifiConnect();
 
@@ -126,12 +150,15 @@ void loop() {
   }
   
   while(!wasRead){   
-    spinServo();    // Drehe Herz
-    lightValue = analogRead(0);      // Lese Helligkeitswert
-    if(lightValue > 300) { 
+    spinServo();    // Turn the heart
+    lightValue = analogRead(0);   // Read light value
+    if(lightValue > lightValueThreshold) {
+      Serial.printf("Analog read value (LDR) %d above threshold of %d -> consider message read.\n", lightValue, lightValueThreshold);
       wasRead = 1;
       EEPROM.write(144, wasRead);
       EEPROM.commit();
     }
   }
+  
+  delay(fetchIntervalMillis);
 }
