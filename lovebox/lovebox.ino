@@ -8,6 +8,7 @@
 #include <SSD1306Wire.h>
 
 #include "settings.h"
+#include "EEPROM_int.h"
 const int fetchIntervalMillis = _fetchIntervalSeconds * 1000;
 const char* ssid = _ssid;
 const char* password = _password;
@@ -76,8 +77,7 @@ void getGistMessage() {
   if(id != idSaved){ // new message
     switchProcess(0);
     idSaved = id;
-    EEPROM.write(142, idSaved);
-    EEPROM.write(144, wasRead);
+    writeIntIntoEEPROM(142, idSaved);
     EEPROM.commit(); 
 
     mode = client.readStringUntil('\n');
@@ -153,7 +153,6 @@ void checkScreen() {
 }
 
 void switchProcess(bool s) {
-  Serial.println("attempting to change process");
   switch (s) {
     case 0: 
       wasRead = false;
@@ -191,12 +190,12 @@ Reactduino app([] () {
   oled.display();
   Serial.println("done.");
   
-  wifiConnect();
-  getGistMessage();
-
   EEPROM.begin(512);
-  idSaved = EEPROM.get(142, idSaved);
-  wasRead = EEPROM.get(144, wasRead);
+  idSaved = readIntFromEEPROM(142);
+  Serial.println(idSaved);
+
+  wifiConnect();
+  getGistMessage();  
 
   app.free(box_process);
   if(wasRead) {
