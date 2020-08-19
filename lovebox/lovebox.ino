@@ -1,4 +1,6 @@
 #include <Reactduino.h>
+
+#include <Reactduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
 #include <EEPROM.h>
@@ -12,16 +14,16 @@ const char* password = _password;
 const String url = _url;
 const int lightValueThreshold = _lightValueThreshold;
 
-SSD1306Wire oled(0x3C, D2, D1);
+SSD1306Wire oled(0x3C, D3, D2);
 Servo heartServo; 
 int pos = 90;
 int increment = -1;
 int lightValue;
 String line;
 String mode;
-char idSaved = '0'; 
+int idSaved = 0; 
 bool wasRead = true;
-reaction process;
+reaction box_process;
 
 /*
  *  Make sure WiFi is connected and load credentials
@@ -53,7 +55,7 @@ void getGistMessage() {
   WiFiClientSecure client;
   client.setFingerprint(fingerprint);
   if (!client.connect(host, httpsPort)) {
-    serial.println("connection failed.");
+    Serial.println("connection failed.");
     return; // Connection failed
   }
 
@@ -69,11 +71,11 @@ void getGistMessage() {
       break;
     }
   }
-  String id = client.readStringUntil('\n');
-  Serial.printf("\tid: '%s', last processed id: '%c'\n", id.c_str(), idSaved);
-  if(id[0] != idSaved){ // new message
-    wasRead = 0;
-    idSaved = id[0];
+  int id = atoi(client.readStringUntil('\n').c_str());
+  Serial.printf("\tid: '%d', last processed id: '%d'\n", id, idSaved);
+  if(id != idSaved){ // new message
+    switchProcess(0);
+    idSaved = id;
     EEPROM.write(142, idSaved);
     EEPROM.write(144, wasRead);
     EEPROM.commit(); 
@@ -95,7 +97,7 @@ void drawMessage(const String& message) {
   Serial.print("Drawing message....");
   oled.clear();
 
-  // Unterscheide zwischen Text und Bild
+  // Differentiates between text and image modes
   if(mode[0] == 't'){
     oled.drawStringMaxWidth(0, 0, 128, message);    
   } 
@@ -127,34 +129,43 @@ void spinServo() {
 }
 
 /*
+ *  Reset the serco to the middle
+ */
+void resetServo() {
+  heartServo.write(84);
+}
+
+/*
  *  Turn screen on/off based on light value
  */
 void checkScreen() {
+  lightValue = analogRead(0);   // Read light value
   if(lightValue > lightValueThreshold) {
-    oled.on();
+    oled.displayOn();
+    // Serial.printf("Analog read value (LDR) %d above threshold of %d -> turning screen on.\n", lightValue, lightValueThreshold);
+    if(!wasRead) { 
+      switchProcess(1);
+    }
   } else {
-    oled.off();
+    oled.displayOff();
+    // Serial.printf("Analog read value (LDR) %d below threshold of %d -> turning screen off.\n", lightValue, lightValueThreshold);
   }
 }
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    wifiConnect();
-  }
-  
-  if(wasRead){
-    getGistMessage();   
-  }
-  
-  while(!wasRead){   
-    spinServo();    // Turn the heart
-    lightValue = analogRead(0);   // Read light value
-    if(lightValue > lightValueThreshold) {
-      Serial.printf("Analog read value (LDR) %d above threshold of %d -> consider message read.\n", lightValue, lightValueThreshold);
-      wasRead = 1;
-      EEPROM.write(144, wasRead);
-      EEPROM.commit();
-    }
+void switchProcess(bool s) {
+  Serial.println("attempting to change process");
+  switch (s) {
+    case 0: 
+      wasRead = false;
+      app.free(box_process);
+      box_process = app.repeat(50, spinServo);
+      break;
+    case 1: 
+      wasRead = true;
+      app.free(box_process);
+      box_process = app.repeat(fetchIntervalMillis, getGistMessage);
+      resetServo();
+      break;
   }
 }
 
@@ -166,6 +177,7 @@ Reactduino app([] () {
   Serial.print("Attatching servo...");
   heartServo.attach(16);       // Servo on D0
   Serial.println("done.");
+  resetServo(); // set servo to starting position
   
   Serial.print("Initializing display...");
   oled.init();
@@ -180,19 +192,21 @@ Reactduino app([] () {
   Serial.println("done.");
   
   wifiConnect();
+  getGistMessage();
 
   EEPROM.begin(512);
   idSaved = EEPROM.get(142, idSaved);
   wasRead = EEPROM.get(144, wasRead);
 
-  // Turn screen on and off based on light value
-  app.repeat(100, checkScreen);
-
-  if wasRead {
+  app.free(box_process);
+  if(wasRead) {
     // Check for and display new messages
-    process = app.repeat(fetchIntervalMillis, getGistMessage);
+    box_process = app.repeat(fetchIntervalMillis, getGistMessage);
   } else {
     // Wait for message to be read
-    process = app.repeat(50, spinServo);
+    box_process = app.repeat(50, spinServo);
   }
+
+  // Turn screen on and off based on light value
+  app.repeat(100, checkScreen);
 });
