@@ -1,48 +1,37 @@
 #include <Reactduino.h>
 
-#include <Reactduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
 #include <EEPROM.h>
 #include <Servo.h>
 #include <SSD1306Wire.h>
 
-#include "settings.h"
-#include "EEPROM_int.h"
-const int fetchIntervalMillis = _fetchIntervalSeconds * 1000;
-const char* ssid = _ssid;
-const char* password = _password;
-const String url = _url;
-const int lightValueThreshold = _lightValueThreshold;
+// WiFi Credential Manager
+#include <DNSServer.h>            // Local DNS Server used for redirecting all requests to the configuration portal
+#include <ESP8266WebServer.h>     // Local WebServer used to serve the configuration portal
+#include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager WiFi Configuration Magic
 
+// Helper functions & includes
+#include "includes/EEPROM_int.h"
+#include "includes/logo.h" // Lovebox logo for when there is no message to be displayed or when initializing
+
+// Pull in and adapt settings
+#include "settings.h"
+const int fetchIntervalMillis = fetchIntervalSeconds * 1000;
+const int brightnessCheckMillis = brightnessCheckSeconds * 1000;
+
+// Global variable definitions
 SSD1306Wire oled(0x3C, D3, D2);
-Servo heartServo; 
-int pos = 90;
+Servo heartServo;
 int increment = -1;
-int lightValue;
 String line;
 String mode;
-int idSaved = 0; 
+int idSaved = 0;
 bool wasRead = true;
+bool screenOn = true;
 reaction box_process;
-
-/*
- *  Make sure WiFi is connected and load credentials
- */
-void wifiConnect() {
-  Serial.printf("Connecting to WiFi '%s'...", ssid);
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.begin(ssid, password);
-  
-    // Waiting for connection
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      Serial.print(".");
-    }
-  }
-  Serial.print("..done. IP ");
-  Serial.println(WiFi.localIP());
-}
+reaction display_process;
+WiFiManager wifiManager;
 
 /*
  *  Connect to the server and download message from gist
@@ -119,10 +108,13 @@ void drawMessage(const String& message) {
  *  Spin the servo when a new message is available
  */
 void spinServo() {
+  static int pos = initialServoPosition;
+  static int increment = -1;
+
   heartServo.write(pos);      
   delay(50);    // wait 50ms to turn servo
 
-  if(pos == 75 || pos == 105){ // 75°-105° range
+  if(pos == (initialServoPosition - 15) || pos == (initialServoPosition + 15)){ // 15° rotation range
     increment *= -1;
   }
   pos += increment;
@@ -132,26 +124,53 @@ void spinServo() {
  *  Reset the serco to the middle
  */
 void resetServo() {
-  heartServo.write(84);
+  heartServo.write(initialServoPosition);
 }
 
 /*
  *  Turn screen on/off based on light value
  */
 void checkScreen() {
-  lightValue = analogRead(0);   // Read light value
-  if(lightValue > lightValueThreshold) {
+  int lightValue;
+  // If the screen is on, turn it off briefly so that the light sensor can get an accurate reading
+  if(screenOn) {
+    oled.displayOff();
+    delay(500); // Wait for display to turn off before checking
+    lightValue = analogRead(0);   // Read light value
     oled.displayOn();
-    // Serial.printf("Analog read value (LDR) %d above threshold of %d -> turning screen on.\n", lightValue, lightValueThreshold);
+  } else {
+    lightValue = analogRead(0);   // Read light value
+  }
+  
+  if(lightValue > lightValueThreshold) {
+    if(!screenOn) {
+      oled.displayOn();
+      screenOn = true;
+      app.free(display_process);
+      display_process = app.repeat(brightnessCheckMillis, checkScreen); // Only check the screen periodically, as the flicker to proplerly check brightness would be a little annoying otherwise
+      Serial.printf("Analog read value (LDR) %d above threshold of %d -> turning screen on.\n", lightValue, lightValueThreshold);
+    }
     if(!wasRead) { 
       switchProcess(1);
     }
   } else {
-    oled.displayOff();
-    // Serial.printf("Analog read value (LDR) %d below threshold of %d -> turning screen off.\n", lightValue, lightValueThreshold);
+    if(screenOn) {
+      oled.displayOff();
+      screenOn = false;
+      app.free(display_process);
+      display_process = app.repeat(100, checkScreen); // Check the screen every 100ms to ensure that it will turn on immediately when the box is opened
+      Serial.printf("Analog read value (LDR) %d below threshold of %d -> turning screen off.\n", lightValue, lightValueThreshold);
+    } else {
+      // Serial.printf("Analog read value (LDR) %d below threshold of %d -> keeping screen off.\n", lightValue, lightValueThreshold);
+    }
   }
 }
 
+/*
+ *  Switch between two processes: 
+ *   - Spin servo when there is a new message
+ *   - Once the message is read, stop spinning the servo and check for new messages
+ */
 void switchProcess(bool s) {
   switch (s) {
     case 0: 
@@ -173,29 +192,37 @@ Reactduino app([] () {
   Serial.begin(9600);
   Serial.println("\n\n");
   
+  // Setup servo
   Serial.print("Attatching servo...");
   heartServo.attach(16);       // Servo on D0
   Serial.println("done.");
   resetServo(); // set servo to starting position
   
+  // Setup display
   Serial.print("Initializing display...");
   oled.init();
   oled.flipScreenVertically();
   oled.setColor(WHITE);
   oled.setTextAlignment(TEXT_ALIGN_LEFT);
   oled.setFont(ArialMT_Plain_10);
-     
   oled.clear();
-  oled.drawString(30, 30, "<3 LOVEBOX <3");
+  oled.drawXbm(0, 0, Lovebox_Logo_width, Lovebox_Logo_height, Lovebox_Logo_bits);
   oled.display();
   Serial.println("done.");
   
+  // Load last message id from EEPROM
   EEPROM.begin(512);
   idSaved = readIntFromEEPROM(142);
   Serial.println(idSaved);
 
-  wifiConnect();
-  getGistMessage();  
+  // Setup wifi using wifiManager
+  WiFi.mode(WIFI_STA); // Disables AP mode unless needed
+  wifiManager.autoConnect("Lovebox");
+  getGistMessage();
+
+  // Disable the built-in LED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
 
   app.free(box_process);
   if(wasRead) {
@@ -207,5 +234,5 @@ Reactduino app([] () {
   }
 
   // Turn screen on and off based on light value
-  app.repeat(100, checkScreen);
+  display_process = app.repeat(brightnessCheckMillis, checkScreen);
 });
