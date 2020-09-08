@@ -23,12 +23,8 @@ const int brightnessCheckMillis = brightnessCheckSeconds * 1000;
 // Global variable definitions
 SSD1306Wire oled(0x3C, D3, D2);
 Servo heartServo;
-int increment = -1;
-String line;
-String mode;
 int idSaved = 0;
 bool wasRead = true;
-bool screenOn = true;
 reaction box_process;
 reaction display_process;
 WiFiManager wifiManager;
@@ -69,11 +65,11 @@ void getGistMessage() {
     writeIntIntoEEPROM(142, idSaved);
     EEPROM.commit(); 
 
-    mode = client.readStringUntil('\n');
+    String mode = client.readStringUntil('\n');
     Serial.println("\tmode: " + mode);
-    line = client.readStringUntil(0);
+    String line = client.readStringUntil(0);
     Serial.println("\tmessage: " + line);
-    drawMessage(line);
+    drawMessage(mode, line);
   } else {
     Serial.println("\t-> message id wasn't updated");
   }
@@ -82,16 +78,15 @@ void getGistMessage() {
 /*
  *  Display message on screen
  */
-void drawMessage(const String& message) {
+void drawMessage(const String& mode, const String& message) {
   Serial.print("Drawing message....");
   oled.clear();
 
   // Differentiates between text and image modes
   if(mode[0] == 't'){
-    oled.drawStringMaxWidth(0, 0, 128, message);    
-  } 
-  else {
-    for(int i = 0; i <= message.length(); i++){
+    oled.drawStringMaxWidth(0, 0, 128, message); // If the message is text, simply draw as a string
+  } else {
+    for(int i = 0; i <= message.length(); i++) { // If the message is a binary image, loop through each pixel, determine its location, and set it on or off
       int x = i % 129;
       int y = i / 129;
     
@@ -100,7 +95,7 @@ void drawMessage(const String& message) {
       }
     } 
   }    
-  oled.display();
+  oled.display(); // Writes the rendered message to the display's memory buffer
   Serial.println("done.");
 }
 
@@ -111,8 +106,7 @@ void spinServo() {
   static int pos = initialServoPosition;
   static int increment = -1;
 
-  heartServo.write(pos);      
-  delay(50);    // wait 50ms to turn servo
+  heartServo.write(pos);
 
   if(pos == (initialServoPosition - 15) || pos == (initialServoPosition + 15)){ // 15° rotation range
     increment *= -1;
@@ -121,7 +115,7 @@ void spinServo() {
 }
 
 /*
- *  Reset the serco to the middle
+ *  Reset the servo to the middle
  */
 void resetServo() {
   heartServo.write(initialServoPosition);
@@ -132,6 +126,7 @@ void resetServo() {
  */
 void checkScreen() {
   int lightValue;
+  static int screenOn = true;
   // If the screen is on, turn it off briefly so that the light sensor can get an accurate reading
   if(screenOn) {
     oled.displayOff();
