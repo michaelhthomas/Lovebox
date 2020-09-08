@@ -2,7 +2,7 @@
 #include <WiFiClientSecure.h>
 #include <EEPROM.h>
 #include <Servo.h>
-#include <SSD1306Wire.h>
+#include "SSD1306Wire.h"
 
 #include "settings.h"
 const int fetchIntervalMillis = _fetchIntervalSeconds * 1000;
@@ -11,7 +11,7 @@ const char* password = _password;
 const String url = _url;
 const int lightValueThreshold = _lightValueThreshold;
 
-SSD1306Wire oled(0x3C, D3, D2);
+SSD1306Wire oled(0x3C, D2, D1);
 Servo myservo; 
 int pos = 90;
 int increment = -1;
@@ -20,14 +20,12 @@ String line;
 String mode;
 char idSaved = '0'; 
 bool wasRead = true;
-unsigned long previousMillis = 0;
-unsigned long currentMillis;
 
 void drawMessage(const String& message) {
   Serial.print("Drawing message....");
   oled.clear();
 
-  // Differentiates between text and image mode
+  // Unterscheide zwischen Text und Bild
   if(mode[0] == 't'){
     oled.drawStringMaxWidth(0, 0, 128, message);    
   } 
@@ -69,7 +67,7 @@ void getGistMessage() {
   WiFiClientSecure client;
   client.setFingerprint(fingerprint);
   if (!client.connect(host, httpsPort)) {
-    Serial.println("connection failed.");
+    serial.println("connection failed.");
     return; // Connection failed
   }
 
@@ -97,7 +95,7 @@ void getGistMessage() {
     mode = client.readStringUntil('\n');
     Serial.println("\tmode: " + mode);
     line = client.readStringUntil(0);
-    // Serial.println("\tmessage: " + line);
+    Serial.println("\tmessage: " + line);
     drawMessage(line);
   } else {
     Serial.println("\t-> message id wasn't updated");
@@ -112,17 +110,6 @@ void spinServo() {
     increment *= -1;
   }
   pos += increment;
-}
-
-void screenOnOff() {
-  lightValue = analogRead(0);   // Read light value
-  if(lightValue > lightValueThreshold) {
-    oled.displayOn();
-    Serial.printf("Analog read value (LDR) %d above threshold of %d -> turning screen on.\n", lightValue, lightValueThreshold);
-  } else {
-    oled.displayOff();
-    Serial.printf("Analog read value (LDR) %d below threshold of %d -> turning screen off.\n", lightValue, lightValueThreshold);
-  }
 }
 
 void setup() {
@@ -154,31 +141,24 @@ void setup() {
 }
 
 void loop() {
-  screenOnOff();
-
-  // timer
-  currentMillis = millis();
-  if(currentMillis - previousMillis >= fetchIntervalMillis) {
-    // save last loop time
-    previousMillis = currentMillis;
-
-    if(WiFi.status() != WL_CONNECTED) {
-      wifiConnect();
-    }
-    
-    if(wasRead){
-      getGistMessage();
-    }
-    
-    while(!wasRead){   
-      spinServo();    // Turn the heart
-      lightValue = analogRead(0);   // Read light value
-      if(lightValue > lightValueThreshold) {
-        Serial.printf("Analog read value (LDR) %d above threshold of %d -> consider message read.\n", lightValue, lightValueThreshold);
-        wasRead = 1;
-        EEPROM.write(144, wasRead);
-        EEPROM.commit();
-      }
+  if (WiFi.status() != WL_CONNECTED) {
+    wifiConnect();
+  }
+  
+  if(wasRead){
+    getGistMessage();   
+  }
+  
+  while(!wasRead){   
+    spinServo();    // Turn the heart
+    lightValue = analogRead(0);   // Read light value
+    if(lightValue > lightValueThreshold) {
+      Serial.printf("Analog read value (LDR) %d above threshold of %d -> consider message read.\n", lightValue, lightValueThreshold);
+      wasRead = 1;
+      EEPROM.write(144, wasRead);
+      EEPROM.commit();
     }
   }
+  
+  delay(fetchIntervalMillis);
 }
